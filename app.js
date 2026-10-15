@@ -1,17 +1,17 @@
-// アプリケーション全体の状態管理
 const APP_STATE = {
   settings: {
-    theme: 'dark',
+    theme: 'auto', // 'auto' | 'dark' | 'light' | 'matrix'
     clockSize: 'normal',
     showDate: true,
     showSeconds: true,
+    vibrate: true,
     sections: {
       clock: true,
       stopwatch: true,
       alarm: true
     }
   },
-  alarms: [], // 登録されたアラーム設定
+  alarms: [],
   stopwatch: {
     startTime: 0,
     elapsedTime: 0,
@@ -23,89 +23,93 @@ const APP_STATE = {
   wakeLock: null
 };
 
-// Web Audio APIによるアラーム発火電子音（外部ファイル不要）
-function playAlarmSound() {
+// ----------------------------------------------------
+// 1. 周辺視野対応音響 & スマホバイブレーション
+// ----------------------------------------------------
+function playAlarmAlert() {
+  // Web Audio APIによる明瞭な警報音（高音2連パルス）
   try {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContextClass) return;
-    
-    if (!APP_STATE.audioCtx) {
-      APP_STATE.audioCtx = new AudioContextClass();
+    if (AudioContextClass) {
+      if (!APP_STATE.audioCtx) APP_STATE.audioCtx = new AudioContextClass();
+      if (APP_STATE.audioCtx.state === 'suspended') APP_STATE.audioCtx.resume();
+
+      const ctx = APP_STATE.audioCtx;
+      const now = ctx.currentTime;
+
+      // 1000Hz と 1500Hz の高周波アラート音（人の耳が最も敏感な帯域）
+      [0, 0.18, 0.36].forEach((delay, idx) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'square'; // 明瞭な電子音
+        osc.frequency.setValueAtTime(idx % 2 === 0 ? 1200 : 1600, now + delay);
+
+        gain.gain.setValueAtTime(0, now + delay);
+        gain.gain.linearRampToValueAtTime(0.4, now + delay + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + delay + 0.14);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start(now + delay);
+        osc.stop(now + delay + 0.15);
+      });
     }
-    if (APP_STATE.audioCtx.state === 'suspended') {
-      APP_STATE.audioCtx.resume();
+  } catch (e) {
+    console.warn('Audio alert error:', e);
+  }
+
+  // スマホのバイブレーション（Vibration API）
+  if (APP_STATE.settings.vibrate && 'vibrate' in navigator) {
+    try {
+      // 300ms振動、100ms休止、300ms振動、100ms休止、500ms強振動
+      navigator.vibrate([300, 100, 300, 100, 500]);
+    } catch (e) {
+      console.warn('Vibration blocked:', e);
     }
-
-    const ctx = APP_STATE.audioCtx;
-    const now = ctx.currentTime;
-    
-    // 3連ビープ音（ピ・ピ・ピ）の生成
-    [0, 0.15, 0.3].forEach(delay => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(880, now + delay); // A5ノート (880Hz)
-      
-      gain.gain.setValueAtTime(0, now + delay);
-      gain.gain.linearRampToValueAtTime(0.3, now + delay + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + delay + 0.12);
-
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-
-      osc.start(now + delay);
-      osc.stop(now + delay + 0.13);
-    });
-  } catch (err) {
-    console.warn('オーディオ再生が制限されました:', err);
   }
 }
 
 // ----------------------------------------------------
-// 1. 時計機能（端末システム時刻）
+// 2. 時計機能
 // ----------------------------------------------------
 function updateClock() {
   const now = new Date();
-  
   if (APP_STATE.settings.showDate) {
     const year = now.getFullYear();
     const month = String(now.getMonth() + 1).padStart(2, '0');
     const day = String(now.getDate()).padStart(2, '0');
-    const daysOfWeek = ['日', '月', '火', '水', '木', '金', '土'];
-    const dow = daysOfWeek[now.getDay()];
+    const dow = ['日', '月', '火', '水', '木', '金', '土'][now.getDay()];
     document.getElementById('clock-date').textContent = `${year}年${month}月${day}日 (${dow})`;
     document.getElementById('clock-date').classList.remove('hidden');
   } else {
     document.getElementById('clock-date').classList.add('hidden');
   }
 
-  const hours = String(now.getHours()).padStart(2, '0');
-  const minutes = String(now.getMinutes()).padStart(2, '0');
-  
+  const h = String(now.getHours()).padStart(2, '0');
+  const m = String(now.getMinutes()).padStart(2, '0');
   if (APP_STATE.settings.showSeconds) {
-    const seconds = String(now.getSeconds()).padStart(2, '0');
-    document.getElementById('clock-time').textContent = `${hours}:${minutes}:${seconds}`;
+    const s = String(now.getSeconds()).padStart(2, '0');
+    document.getElementById('clock-time').textContent = `${h}:${m}:${s}`;
   } else {
-    document.getElementById('clock-time').textContent = `${hours}:${minutes}`;
+    document.getElementById('clock-time').textContent = `${h}:${m}`;
   }
 }
 
 // ----------------------------------------------------
-// 2. ストップウォッチ機能
+// 3. ストップウォッチ
 // ----------------------------------------------------
 function formatTime(ms) {
-  const minutes = Math.floor(ms / 60000);
-  const seconds = Math.floor((ms % 60000) / 1000);
+  const min = Math.floor(ms / 60000);
+  const sec = Math.floor((ms % 60000) / 1000);
   const hundredths = Math.floor((ms % 1000) / 10);
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(hundredths).padStart(2, '0')}`;
+  return `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}.${String(hundredths).padStart(2, '0')}`;
 }
 
 function startStopwatch() {
   if (APP_STATE.stopwatch.running) return;
   APP_STATE.stopwatch.running = true;
   APP_STATE.stopwatch.startTime = performance.now() - APP_STATE.stopwatch.elapsedTime;
-  
   APP_STATE.stopwatch.timerId = setInterval(() => {
     APP_STATE.stopwatch.elapsedTime = performance.now() - APP_STATE.stopwatch.startTime;
     document.getElementById('sw-time').textContent = formatTime(APP_STATE.stopwatch.elapsedTime);
@@ -121,7 +125,6 @@ function pauseStopwatch() {
   if (!APP_STATE.stopwatch.running) return;
   APP_STATE.stopwatch.running = false;
   clearInterval(APP_STATE.stopwatch.timerId);
-
   document.getElementById('sw-start-btn').disabled = false;
   document.getElementById('sw-pause-btn').disabled = true;
   document.getElementById('sw-lap-btn').disabled = true;
@@ -139,36 +142,28 @@ function resetStopwatch() {
 
 function recordLap() {
   if (!APP_STATE.stopwatch.running) return;
-  const currentTotal = APP_STATE.stopwatch.elapsedTime;
-  const lastTotal = APP_STATE.stopwatch.laps.length > 0 
-    ? APP_STATE.stopwatch.laps[APP_STATE.stopwatch.laps.length - 1].total 
-    : 0;
-  const lapDuration = currentTotal - lastTotal;
-  
-  const lapNumber = APP_STATE.stopwatch.laps.length + 1;
-  APP_STATE.stopwatch.laps.push({ number: lapNumber, lap: lapDuration, total: currentTotal });
+  const current = APP_STATE.stopwatch.elapsedTime;
+  const last = APP_STATE.stopwatch.laps.length > 0 ? APP_STATE.stopwatch.laps[APP_STATE.stopwatch.laps.length - 1].total : 0;
+  const lapTime = current - last;
+  const num = APP_STATE.stopwatch.laps.length + 1;
+  APP_STATE.stopwatch.laps.push({ number: num, lap: lapTime, total: current });
 
-  const tbody = document.getElementById('sw-lap-list');
   const tr = document.createElement('tr');
-  tr.innerHTML = `
-    <td>#${lapNumber}</td>
-    <td>${formatTime(lapDuration)}</td>
-    <td>${formatTime(currentTotal)}</td>
-  `;
-  tbody.insertBefore(tr, tbody.firstChild);
+  tr.innerHTML = `<td>#${num}</td><td>${formatTime(lapTime)}</td><td>${formatTime(current)}</td>`;
+  document.getElementById('sw-lap-list').insertBefore(tr, document.getElementById('sw-lap-list').firstChild);
 }
 
 // ----------------------------------------------------
-// 3. インターバルアラーム機能
+// 4. アラーム（一括同期機能付き）
 // ----------------------------------------------------
 function saveAlarmsToStorage() {
-  const serializable = APP_STATE.alarms.map(a => ({
+  const data = APP_STATE.alarms.map(a => ({
     id: a.id,
     label: a.label,
     intervalMs: a.intervalMs,
     running: a.running
   }));
-  localStorage.setItem('clock_alarms', JSON.stringify(serializable));
+  localStorage.setItem('clock_alarms', JSON.stringify(data));
 }
 
 function loadAlarmsFromStorage() {
@@ -176,12 +171,13 @@ function loadAlarmsFromStorage() {
   if (data) {
     try {
       const parsed = JSON.parse(data);
+      const now = Date.now();
       APP_STATE.alarms = parsed.map(item => ({
         id: item.id || Date.now().toString(),
         label: item.label,
         intervalMs: item.intervalMs,
         running: item.running || false,
-        nextTrigger: item.running ? Date.now() + item.intervalMs : null
+        nextTrigger: item.running ? now + item.intervalMs : null
       }));
     } catch (e) {
       APP_STATE.alarms = [];
@@ -194,25 +190,25 @@ function renderAlarmList() {
   container.innerHTML = '';
 
   if (APP_STATE.alarms.length === 0) {
-    container.innerHTML = '<p style="color:var(--text-muted);text-align:center;">登録されたアラームはありません</p>';
+    container.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:1rem;">登録されたアラームはありません</p>';
     return;
   }
 
   APP_STATE.alarms.forEach(alarm => {
     const div = document.createElement('div');
-    div.className = 'alarm-item';
-    div.dataset.id = alarm.id;
+    div.className = `alarm-item ${alarm.running ? 'active' : ''}`;
+    div.id = `alarm-item-${alarm.id}`;
 
-    const intervalSec = Math.floor(alarm.intervalMs / 1000);
-    const m = Math.floor(intervalSec / 60);
-    const s = intervalSec % 60;
+    const totalSec = Math.floor(alarm.intervalMs / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
     const intervalStr = `${m > 0 ? `${m}分` : ''}${s > 0 ? `${s}秒` : ''}`;
 
     div.innerHTML = `
       <div class="alarm-item-info">
         <div class="alarm-item-title">${escapeHtml(alarm.label)} (${intervalStr}ごと)</div>
         <div class="alarm-item-countdown" id="countdown-${alarm.id}">
-          状態: ${alarm.running ? '稼働中 (計算中...)' : '停止中'}
+          状態: ${alarm.running ? '稼働中' : '停止中'}
         </div>
       </div>
       <div class="alarm-item-controls">
@@ -233,7 +229,7 @@ function updateAlarmCountdowns() {
 
     if (now >= alarm.nextTrigger) {
       triggerAlarm(alarm);
-      alarm.nextTrigger = now + alarm.intervalMs; // 次のインターバルをセット
+      alarm.nextTrigger = now + alarm.intervalMs;
     }
 
     const remainMs = Math.max(0, alarm.nextTrigger - now);
@@ -247,80 +243,127 @@ function updateAlarmCountdowns() {
   });
 }
 
+// 一括開始：全イベントのカウントダウンを「今この瞬間」から同一同期
+function startAllAlarms() {
+  if (APP_STATE.alarms.length === 0) return;
+  const syncBaseTime = Date.now();
+  APP_STATE.alarms.forEach(alarm => {
+    alarm.running = true;
+    alarm.nextTrigger = syncBaseTime + alarm.intervalMs;
+  });
+  saveAlarmsToStorage();
+  renderAlarmList();
+}
+
+// 一括停止
+function stopAllAlarms() {
+  APP_STATE.alarms.forEach(alarm => {
+    alarm.running = false;
+    alarm.nextTrigger = null;
+  });
+  saveAlarmsToStorage();
+  renderAlarmList();
+}
+
 function triggerAlarm(alarm) {
-  // 1. 音声
-  playAlarmSound();
+  playAlarmAlert();
 
-  // 2. 視覚的点滅
-  document.body.classList.add('alarm-flashing');
+  // 周辺視野ストロボ枠を表示
+  document.getElementById('flash-frame').classList.remove('hidden');
 
-  // 3. 画面内モーダルダイアログ
+  // モーダル表示
   const modal = document.getElementById('alarm-overlay');
-  const msg = document.getElementById('alarm-modal-message');
-  msg.textContent = `【${alarm.label}】の時間です！`;
+  document.getElementById('alarm-modal-message').textContent = `【${alarm.label}】`;
   modal.classList.remove('hidden');
 
-  // 4. ブラウザー通知（許可されている場合）
+  // ブラウザー通知
   if ('Notification' in window && Notification.permission === 'granted') {
     try {
-      new Notification('マルチタイマ＆クロック', {
-        body: `【${alarm.label}】の設定時間になりました。`,
+      new Notification('【アラーム通知】', {
+        body: `設定した「${alarm.label}」の時間になりました！`,
         icon: 'icon.svg'
       });
-    } catch (e) {
-      // 一部環境での通知エラーをキャッチ
-    }
+    } catch (e) {}
   }
 }
 
 function dismissAlarm() {
-  document.body.classList.remove('alarm-flashing');
+  document.getElementById('flash-frame').classList.add('hidden');
   document.getElementById('alarm-overlay').classList.add('hidden');
+  if ('vibrate' in navigator) navigator.vibrate(0); // 振動停止
 }
 
 // ----------------------------------------------------
-// 4. 設定の保存と読み込み
+// 5. ダーク/ライト自動判別 & テーマ反映
 // ----------------------------------------------------
+function getEffectiveTheme() {
+  if (APP_STATE.settings.theme === 'auto') {
+    // OS・ブラウザーのダークモード判定
+    const isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    return isDark ? 'dark' : 'light';
+  }
+  return APP_STATE.settings.theme;
+}
+
+function applyTheme() {
+  const activeTheme = getEffectiveTheme();
+  document.body.dataset.theme = activeTheme;
+
+  // meta theme-color も連動
+  const themeColorMeta = document.querySelector('meta[name="theme-color"]');
+  if (themeColorMeta) {
+    themeColorMeta.setAttribute('content', activeTheme === 'dark' ? '#0b1120' : '#f8fafc');
+  }
+}
+
 function saveSettings() {
   localStorage.setItem('clock_settings', JSON.stringify(APP_STATE.settings));
 }
 
 function applySettings() {
-  const s = APP_STATE.settings;
-  document.body.dataset.theme = s.theme;
-  document.body.dataset.clockSize = s.clockSize;
+  applyTheme();
+  document.body.dataset.clockSize = APP_STATE.settings.clockSize;
 
-  document.getElementById('section-clock').classList.toggle('hidden', !s.sections.clock);
-  document.getElementById('section-stopwatch').classList.toggle('hidden', !s.sections.stopwatch);
-  document.getElementById('section-alarm').classList.toggle('hidden', !s.sections.alarm);
+  document.getElementById('section-clock').classList.toggle('hidden', !APP_STATE.settings.sections.clock);
+  document.getElementById('section-stopwatch').classList.toggle('hidden', !APP_STATE.settings.sections.stopwatch);
+  document.getElementById('section-alarm').classList.toggle('hidden', !APP_STATE.settings.sections.alarm);
 
-  document.getElementById('setting-theme').value = s.theme;
-  document.getElementById('setting-clock-size').value = s.clockSize;
-  document.getElementById('setting-show-date').checked = s.showDate;
-  document.getElementById('setting-show-seconds').checked = s.showSeconds;
-  document.getElementById('setting-show-clock-section').checked = s.sections.clock;
-  document.getElementById('setting-show-stopwatch-section').checked = s.sections.stopwatch;
-  document.getElementById('setting-show-alarm-section').checked = s.sections.alarm;
+  document.getElementById('setting-theme').value = APP_STATE.settings.theme;
+  document.getElementById('setting-clock-size').value = APP_STATE.settings.clockSize;
+  document.getElementById('setting-vibrate').checked = APP_STATE.settings.vibrate;
+  document.getElementById('setting-show-date').checked = APP_STATE.settings.showDate;
+  document.getElementById('setting-show-seconds').checked = APP_STATE.settings.showSeconds;
+  document.getElementById('setting-show-clock-section').checked = APP_STATE.settings.sections.clock;
+  document.getElementById('setting-show-stopwatch-section').checked = APP_STATE.settings.sections.stopwatch;
+  document.getElementById('setting-show-alarm-section').checked = APP_STATE.settings.sections.alarm;
 }
 
 function loadSettings() {
   const data = localStorage.getItem('clock_settings');
   if (data) {
     try {
-      const parsed = JSON.parse(data);
-      APP_STATE.settings = { ...APP_STATE.settings, ...parsed };
+      APP_STATE.settings = { ...APP_STATE.settings, ...JSON.parse(data) };
     } catch (e) {}
   }
   applySettings();
 }
 
-// 画面常時点灯（Screen Wake Lock API）
+// OSのダークモード切り替えを動的に監視
+if (window.matchMedia) {
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (APP_STATE.settings.theme === 'auto') {
+      applyTheme();
+    }
+  });
+}
+
+// Wake Lock（画面点灯維持）
 async function toggleWakeLock() {
   const btn = document.getElementById('toggle-wakelock-btn');
   const badge = document.getElementById('wakelock-status');
 
   if (!('wakeLock' in navigator)) {
-    alert('お使いのブラウザーは画面点灯維持（Screen Wake Lock API）に対応していません。');
+    alert('このブラウザーは画面点灯維持API（Wake Lock）に対応していません。');
     return;
   }
 
@@ -336,46 +379,33 @@ async function toggleWakeLock() {
       badge.textContent = '維持中';
       badge.classList.add('active');
       btn.textContent = '画面維持を解除する';
-
       APP_STATE.wakeLock.addEventListener('release', () => {
         APP_STATE.wakeLock = null;
         badge.textContent = 'オフ';
         badge.classList.remove('active');
         btn.textContent = '画面点灯を維持する';
       });
-    } catch (err) {
-      console.warn('Wake Lock request error:', err);
-    }
+    } catch (e) {}
   }
 }
 
-// ユーティリティ
 function escapeHtml(str) {
-  return str.replace(/[&<>'"]/g, tag => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    "'": '&#39;',
-    '"': '&quot;'
-  }[tag] || tag));
+  return str.replace(/[&<>'"]/g, t => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[t] || t));
 }
 
 // ----------------------------------------------------
-// イベントリスナー登録と初期化
+// 初期化とイベント配線
 // ----------------------------------------------------
 document.addEventListener('DOMContentLoaded', () => {
   loadSettings();
   loadAlarmsFromStorage();
   renderAlarmList();
 
-  // 時計更新（毎秒）
   updateClock();
   setInterval(updateClock, 1000);
-
-  // アラーム監視（100ms周期）
   setInterval(updateAlarmCountdowns, 100);
 
-  // ストップウォッチ操作
+  // ストップウォッチ
   document.getElementById('sw-start-btn').addEventListener('click', startStopwatch);
   document.getElementById('sw-pause-btn').addEventListener('click', pauseStopwatch);
   document.getElementById('sw-reset-btn').addEventListener('click', resetStopwatch);
@@ -394,21 +424,23 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    const newAlarm = {
+    APP_STATE.alarms.push({
       id: Date.now().toString(),
       label: label || 'タイマー',
       intervalMs: totalMs,
       running: true,
       nextTrigger: Date.now() + totalMs
-    };
-
-    APP_STATE.alarms.push(newAlarm);
+    });
     saveAlarmsToStorage();
     renderAlarmList();
     document.getElementById('alarm-label').value = '';
   });
 
-  // アラームリスト内クリック操作（委任）
+  // 一括操作ボタン
+  document.getElementById('bulk-start-btn').addEventListener('click', startAllAlarms);
+  document.getElementById('bulk-stop-btn').addEventListener('click', stopAllAlarms);
+
+  // アラーム個別の開始/停止/削除
   document.getElementById('alarm-list').addEventListener('click', (e) => {
     const id = e.target.dataset.id;
     if (!id) return;
@@ -428,38 +460,37 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // アラーム停止ボタン
   document.getElementById('dismiss-alarm-btn').addEventListener('click', dismissAlarm);
 
-  // 通知許可要求
+  // 通知許可
   document.getElementById('request-notify-btn').addEventListener('click', async () => {
     if (!('Notification' in window)) {
-      alert('お使いのブラウザーはWeb Notificationsに対応していません。');
+      alert('このブラウザーは通知機能に対応していません。');
       return;
     }
     const perm = await Notification.requestPermission();
-    if (perm === 'granted') {
-      alert('通知が許可されました。アラーム時にデスクトップ通知が送信されます。');
-    } else {
-      alert('通知は許可されませんでした。アプリ画面内の通知・点滅・音で知らせます。');
-    }
+    if (perm === 'granted') alert('通知が許可されました。');
   });
 
-  // 表示設定パネル開閉
+  // 設定パネル
   document.getElementById('toggle-display-settings-btn').addEventListener('click', () => {
     document.getElementById('display-settings-panel').classList.toggle('hidden');
   });
 
-  // 設定変更の反映
   document.getElementById('setting-theme').addEventListener('change', (e) => {
     APP_STATE.settings.theme = e.target.value;
-    applySettings();
+    applyTheme();
     saveSettings();
   });
 
   document.getElementById('setting-clock-size').addEventListener('change', (e) => {
     APP_STATE.settings.clockSize = e.target.value;
     applySettings();
+    saveSettings();
+  });
+
+  document.getElementById('setting-vibrate').addEventListener('change', (e) => {
+    APP_STATE.settings.vibrate = e.target.checked;
     saveSettings();
   });
 
@@ -476,7 +507,6 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   ['clock', 'stopwatch', 'alarm'].forEach(sec => {
-    const cap = sec.charAt(0).toUpperCase() + sec.slice(1);
     document.getElementById(`setting-show-${sec}-section`).addEventListener('change', (e) => {
       APP_STATE.settings.sections[sec] = e.target.checked;
       applySettings();
@@ -484,30 +514,19 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // 画面点灯維持
   document.getElementById('toggle-wakelock-btn').addEventListener('click', toggleWakeLock);
 
-  // ローカルデータ消去
   document.getElementById('clear-storage-btn').addEventListener('click', () => {
-    if (confirm('ローカルに保存されているアラーム設定と表示設定を全てリセットしますか？')) {
-      localStorage.removeItem('clock_settings');
-      localStorage.removeItem('clock_alarms');
+    if (confirm('保存された設定とアラーム一覧を初期化しますか？')) {
+      localStorage.clear();
       location.reload();
     }
   });
 });
 
-// ----------------------------------------------------
-// 5. Service Worker 登録（GitHub Pages相対パス考慮）
-// ----------------------------------------------------
+// Service Worker 登録
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js')
-      .then(reg => {
-        console.log('ServiceWorker registered with scope:', reg.scope);
-      })
-      .catch(err => {
-        console.error('ServiceWorker registration failed:', err);
-      });
+    navigator.serviceWorker.register('./sw.js').catch(console.error);
   });
 }
