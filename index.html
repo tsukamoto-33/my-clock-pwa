@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
-  <meta name="theme-color" content="#121826">
+  <meta name="theme-color" content="#0f172a">
   <meta name="description" content="完全オフラインで動作する時計・ストップウォッチ・インターバルアラームPWA">
   <title>マルチタイマ＆クロック</title>
   <link rel="manifest" href="manifest.json">
@@ -12,11 +12,16 @@
 </head>
 <body data-theme="dark" data-clock-size="normal">
 
+  <!-- 周辺視野検知用の超高輝度フラッシュ枠 -->
+  <div id="flash-frame" class="flash-frame hidden"></div>
+
+  <!-- アラームモーダル -->
   <div id="alarm-overlay" class="alarm-overlay hidden">
     <div class="alarm-modal">
-      <div class="alarm-modal-title">⚠️ アラーム通知</div>
-      <div id="alarm-modal-message" class="alarm-modal-message">時間が経過しました</div>
-      <button id="dismiss-alarm-btn" class="btn btn-primary btn-large">確認・停止</button>
+      <div class="alarm-modal-badge">ALARM TRIGGERED</div>
+      <div class="alarm-modal-title">⚠️ 時間になりました！</div>
+      <div id="alarm-modal-message" class="alarm-modal-message">【アラーム名】</div>
+      <button id="dismiss-alarm-btn" class="btn btn-alarm-stop">確認してアラームを止める</button>
     </div>
   </div>
 
@@ -25,20 +30,21 @@
       <h1>CLOCK / TIMER</h1>
     </div>
     <div class="header-controls">
-      <button id="toggle-display-settings-btn" class="btn btn-secondary">⚙️ 表示設定</button>
+      <button id="toggle-display-settings-btn" class="btn btn-secondary">⚙️ 設定</button>
       <button id="request-notify-btn" class="btn btn-secondary">🔔 通知許可</button>
     </div>
   </header>
 
   <!-- 表示設定パネル -->
   <section id="display-settings-panel" class="settings-panel hidden">
-    <h2>表示・レイアウト設定</h2>
+    <h2>表示・動作設定</h2>
     <div class="settings-grid">
       <div class="setting-item">
         <label>テーマ配色：</label>
         <select id="setting-theme">
-          <option value="dark">ダーク（標準）</option>
-          <option value="light">ライト（高コントラスト）</option>
+          <option value="auto">端末設定に合わせる（自動）</option>
+          <option value="dark">ダーク（常時）</option>
+          <option value="light">ライト（常時）</option>
           <option value="matrix">グリーン（夜間用）</option>
         </select>
       </div>
@@ -50,6 +56,13 @@
         </select>
       </div>
       <div class="setting-item">
+        <label>スマホのバイブレーション：</label>
+        <label class="toggle-switch">
+          <input type="checkbox" id="setting-vibrate" checked>
+          <span>アラーム時に振動させる</span>
+        </label>
+      </div>
+      <div class="setting-item">
         <label>日付表示：</label>
         <input type="checkbox" id="setting-show-date" checked>
       </div>
@@ -58,7 +71,7 @@
         <input type="checkbox" id="setting-show-seconds" checked>
       </div>
       <div class="setting-item">
-        <label>機能の個別表示：</label>
+        <label>機能の表示切替：</label>
         <div class="checkbox-group">
           <label><input type="checkbox" id="setting-show-clock-section" checked> 時計</label>
           <label><input type="checkbox" id="setting-show-stopwatch-section" checked> ストップウォッチ</label>
@@ -78,7 +91,7 @@
     <section id="section-clock" class="card clock-card">
       <div class="card-header">
         <h2>時計</h2>
-        <span class="source-info">端末システム時刻を使用中</span>
+        <span class="source-info">端末システム時刻</span>
       </div>
       <div id="clock-date" class="clock-date">----年--月--日（-）</div>
       <div id="clock-time" class="clock-time">00:00:00</div>
@@ -107,9 +120,7 @@
               <th>通算時間</th>
             </tr>
           </thead>
-          <tbody id="sw-lap-list">
-            <!-- ラップ履歴 -->
-          </tbody>
+          <tbody id="sw-lap-list"></tbody>
         </table>
       </div>
     </section>
@@ -124,11 +135,11 @@
         <div class="form-inputs">
           <div class="input-field">
             <label for="alarm-label">名称：</label>
-            <input type="text" id="alarm-label" placeholder="例: 休憩、ストレッチ" maxlength="20" required>
+            <input type="text" id="alarm-label" placeholder="例: 3分経過、水分補給" maxlength="20" required>
           </div>
           <div class="input-field">
             <label for="alarm-min">間隔（分）：</label>
-            <input type="number" id="alarm-min" min="0" max="1440" value="5" required>
+            <input type="number" id="alarm-min" min="0" max="1440" value="3" required>
           </div>
           <div class="input-field">
             <label for="alarm-sec">間隔（秒）：</label>
@@ -138,21 +149,27 @@
         <button type="submit" class="btn btn-primary">+ アラームを追加</button>
       </form>
 
-      <div class="alarm-list-container">
+      <div class="alarm-list-header">
         <h3>登録中アラーム一覧</h3>
-        <div id="alarm-list" class="alarm-list">
-          <!-- アラーム項目一覧が挿入される -->
+        <!-- 一括操作ボタン群 -->
+        <div class="bulk-controls">
+          <button id="bulk-start-btn" class="btn btn-bulk-start" title="すべてのイベントを同一タイムラインで一斉に開始します">▶ すべて開始</button>
+          <button id="bulk-stop-btn" class="btn btn-bulk-stop" title="すべてのアラームを停止します">⏹ すべて停止</button>
         </div>
+      </div>
+
+      <div id="alarm-list" class="alarm-list">
+        <!-- アラームアイテム -->
       </div>
     </section>
   </main>
 
   <footer class="app-footer">
     <div class="privacy-note">
-      <small>【完全ローカル動作】外部サーバー通信なし・解析タグなし・端末ローカルで動作中</small>
+      <small>【完全ローカル動作】外部サーバー通信なし・端末内完結・オフライン対応</small>
     </div>
     <div class="storage-management">
-      <button id="clear-storage-btn" class="btn btn-text">ローカル保存設定を消去</button>
+      <button id="clear-storage-btn" class="btn btn-text">ローカル保存設定を初期化</button>
     </div>
   </footer>
 
